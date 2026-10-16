@@ -3,14 +3,20 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { buildApp } from '../app.js';
 import { prisma } from '../db.js';
+import { CONTRACTS } from '../env.js';
 import { CLAIM_GRACE_MS } from '../lib/lifecycle.js';
 
 const CLINIC = 'GDOOCNK2HL6TB2Y7FDYNNMG4GTM2PNPY4XCTWG2INFPYYVA66FCPZKBK';
 const PENDING_CLINIC = 'GBWBYKGC5OCRELVP5WHAKEMBSZMNUY3HOKVSYBQGLFNWWQHNH2SD53FZ';
 const FUNDER = 'GDUPJTF3PNSYJ73WWLNTYLG6UXN7HHBKCGFEEMDFMWKWGR3UMQT3JG45';
+const ADMIN = 'A'.repeat(56);
+const NEW_ADMIN = 'B'.repeat(56);
 const REF = '72676a6f4fff92b09ab1c6368672b05112062f683014d07c9518d4141d094745';
 const OTHER_REF = 'a'.repeat(64);
 const DAY = 24 * 60 * 60 * 1000;
+
+const REGISTRY = CONTRACTS.find((c) => c.contract === 'registry')!.contractId;
+const VOUCHER = CONTRACTS.find((c) => c.contract === 'voucher')!.contractId;
 
 let app: FastifyInstance;
 
@@ -134,6 +140,75 @@ async function seed() {
       },
     ],
   });
+
+  const at = (dayOffset: number) => new Date(now - dayOffset * DAY);
+  await prisma.governanceEvent.createMany({
+    data: [
+      {
+        id: 'gov-1',
+        contractId: REGISTRY,
+        contract: 'registry',
+        kind: 'Proposed',
+        admin: ADMIN,
+        pendingAdmin: NEW_ADMIN,
+        ledger: 10,
+        occurredAt: at(30),
+      },
+      {
+        id: 'gov-2',
+        contractId: REGISTRY,
+        contract: 'registry',
+        kind: 'Changed',
+        admin: NEW_ADMIN,
+        pendingAdmin: null,
+        ledger: 12,
+        occurredAt: at(29),
+      },
+      {
+        id: 'gov-3',
+        contractId: VOUCHER,
+        contract: 'voucher',
+        kind: 'Proposed',
+        admin: ADMIN,
+        pendingAdmin: NEW_ADMIN,
+        ledger: 14,
+        occurredAt: at(28),
+      },
+    ],
+  });
+  await prisma.providerStatusChange.createMany({
+    data: [
+      { id: 'st-1', providerAddress: CLINIC, status: 'Active', ledger: 10, changedAt: at(20) },
+      {
+        id: 'st-2',
+        providerAddress: CLINIC,
+        status: 'Suspended',
+        ledger: 12,
+        changedAt: at(15),
+      },
+      { id: 'st-3', providerAddress: CLINIC, status: 'Active', ledger: 14, changedAt: at(10) },
+    ],
+  });
+  await prisma.servicePriceChange.createMany({
+    data: [
+      {
+        id: 'sp-1',
+        providerAddress: CLINIC,
+        code: 101,
+        price: '30000000',
+        ledger: 10,
+        changedAt: at(20),
+      },
+      {
+        id: 'sp-2',
+        providerAddress: CLINIC,
+        code: 101,
+        price: '35000000',
+        ledger: 12,
+        changedAt: at(15),
+      },
+    ],
+  });
 }
 
 beforeAll(async () => {
@@ -150,6 +225,9 @@ beforeEach(async () => {
   await prisma.voucher.deleteMany();
   await prisma.service.deleteMany();
   await prisma.provider.deleteMany();
+  await prisma.governanceEvent.deleteMany();
+  await prisma.providerStatusChange.deleteMany();
+  await prisma.servicePriceChange.deleteMany();
   await seed();
 });
 
@@ -294,5 +372,67 @@ describe('GET /receipts', () => {
   it('requires a beneficiary reference', async () => {
     const { status } = await get('/receipts');
     expect(status).toBe(400);
+  });
+});
+
+describe('GET /governance', () => {
+  it('reports current and pending admin plus history for each contract', async () => {
+    const { status, body } = await get('/governance');
+    expect(status).toBe(200);
+
+    const byName = (name: string) =>
+      body.contracts.find((c: { contract: string }) => c.contract === name);
+
+    expect(byName('registry')).toMatchObject({ currentAdmin: NEW_ADMIN, pendingAdmin: null });
+    expect(byName('registry').history.map((h: { type: string }) => h.type)).toEqual([
+      'Proposed',
+      'Changed',
+    ]);
+
+    expect(byName('voucher')).toMatchObject({ currentAdmin: ADMIN, pendingAdmin: NEW_ADMIN });
+    expect(byName('voucher').history).toHaveLength(1);
+
+    expect(byName('receipt')).toMatchObject({
+      currentAdmin: null,
+      pendingAdmin: null,
+      history: [],
+    });
+  });
+});
+
+describe('GET /providers/:address/history', () => {
+  it('returns status transitions oldest first', async () => {
+    const { status, body } = await get(`/providers/${CLINIC}/history`);
+    expect(status).toBe(200);
+    expect(body.history.map((h: { status: string }) => h.status)).toEqual([
+      'Active',
+      'Suspended',
+      'Active',
+    ]);
+    expect(body.history.map((h: { ledger: number }) => h.ledger)).toEqual([10, 12, 14]);
+  });
+
+  it('404s an unknown provider', async () => {
+    const { status, body } = await get(`/providers/${FUNDER}/history`);
+    expect(status).toBe(404);
+    expect(body.error).toBe('provider_not_found');
+  });
+});
+
+describe('GET /providers/:address/services/:code/history', () => {
+  it('returns price changes oldest first', async () => {
+    const { status, body } = await get(`/providers/${CLINIC}/services/101/history`);
+    expect(status).toBe(200);
+    expect(body.history.map((h: { price: string }) => h.price)).toEqual([
+      '30000000',
+      '35000000',
+    ]);
+    expect(body.history[0].priceDisplay).toBe('3.0000000');
+  });
+
+  it('rejects a non-numeric service code', async () => {
+    const { status, body } = await get(`/providers/${CLINIC}/services/abc/history`);
+    expect(status).toBe(400);
+    expect(body.error).toBe('invalid_code');
   });
 });

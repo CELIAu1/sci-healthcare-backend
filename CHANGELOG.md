@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `GET /governance` — current and pending admin for each contract, plus the
+  full proposal/handover history. Backed by a new `GovernanceEvent` table fed
+  by the `admin_proposed` and `admin_changed` events from all three contracts.
+- `GET /providers/:address/history` — every status transition for a clinic,
+  oldest first, from a new `ProviderStatusChange` table. Suspension history is
+  context the current `status` alone cannot show.
+- `GET /providers/:address/services/:code/history` — every observed price for a
+  service, oldest first, from a new `ServicePriceChange` table. Written only
+  when `service_upserted` actually changes the price; a relabel adds nothing.
+- The indexer now polls again immediately when a cycle fills its page budget
+  (`collectEvents` returns `hasMore`), instead of waiting `INDEXER_POLL_MS` the
+  whole way through a backlog. The normal interval resumes once caught up.
+
 ## 0.2.0 — 2026-10-09
 
 ### Fixed
