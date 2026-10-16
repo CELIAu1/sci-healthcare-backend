@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **GET /receipts?provider=**: List receipts by clinic/provider. Beneficiary references omitted in this view.
+- **GET /receipts/:voucherId**: Fetch a single receipt by voucher ID for shareable receipt pages and verification. No beneficiary reference in response.
+- **GET /vouchers/due?within=72h**: Vouchers needing action soon (expiring, becoming refundable, or settleable) with funder or provider filter. Uses lifecycle logic from `src/lib/lifecycle.ts` so API and contracts agree.
+- **Multi-status filter for vouchers**: `?status=Claimed,Attested` accepts comma-separated list validated against the status enum; invalid values rejected.
+
+### Changed
+- **GET /receipts**: Now requires exactly one of `beneficiaryRef` or `provider` query parameters.
+- **GET /vouchers**: Status filter now accepts comma-separated values (e.g., `Claimed,Attested`) instead of a single value.
+
 ## 0.2.0 — 2026-10-09
 
 ### Fixed
