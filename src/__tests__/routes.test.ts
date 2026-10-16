@@ -373,6 +373,145 @@ describe('GET /receipts', () => {
     const { status } = await get('/receipts');
     expect(status).toBe(400);
   });
+
+  it('lists receipts by provider, omitting beneficiaryRef', async () => {
+    const { body } = await get(`/receipts?provider=${CLINIC}`);
+    expect(body.total).toBe(2);
+    expect(body.totalSpend).toBe('40000000');
+    expect(body.receipts.map((r: { voucherId: string }) => r.voucherId)).toEqual(['9', '1']);
+    expect(body.receipts[0]).not.toHaveProperty('beneficiaryRef');
+    expect(body.receipts[0].serviceLabel).toBe('Malaria rapid test');
+  });
+
+  it('requires exactly one of beneficiaryRef or provider', async () => {
+    const { status, body } = await get('/receipts');
+    expect(status).toBe(400);
+    expect(body.error).toBe('invalid_query');
+
+    const { status: s2, body: b2 } = await get(`/receipts?beneficiaryRef=${REF}&provider=${CLINIC}`);
+    expect(s2).toBe(400);
+    expect(b2.error).toBe('invalid_query');
+  });
+});
+
+describe('GET /receipts/:voucherId', () => {
+  it('returns a single receipt by voucherId without beneficiaryRef', async () => {
+    const { body } = await get('/receipts/1');
+    expect(body.voucherId).toBe('1');
+    expect(body.amount).toBe('30000000');
+    expect(body.amountDisplay).toBe('3.0000000');
+    expect(body.serviceLabel).toBe('Outpatient consult');
+    expect(body).not.toHaveProperty('beneficiaryRef');
+  });
+
+  it('404s for an unknown voucher', async () => {
+    const { status, body } = await get('/receipts/999');
+    expect(status).toBe(404);
+    expect(body.error).toBe('receipt_not_found');
+  });
+});
+
+describe('GET /vouchers', () => {
+  it('accepts comma-separated status list', async () => {
+    const { body } = await get(`/vouchers?funder=${FUNDER}&status=Claimed,Attested`);
+    expect(body.vouchers.map((v: { id: string }) => v.id).sort()).toEqual(['3', '4']);
+  });
+
+  it('rejects invalid status values', async () => {
+    const { status, body } = await get(`/vouchers?funder=${FUNDER}&status=Claimed,Invalid`);
+    expect(status).toBe(400);
+    expect(body.error).toBe('invalid_query');
+  });
+});
+
+describe('GET /vouchers/due', () => {
+  it('requires funder or provider', async () => {
+    const { status, body } = await get('/vouchers/due?within=72h');
+    expect(status).toBe(400);
+    expect(body.error).toBe('filter_required');
+  });
+
+  it('rejects invalid within format', async () => {
+    const { status, body } = await get(`/vouchers/due?funder=${FUNDER}&within=invalid`);
+    expect(status).toBe(400);
+    expect(body.error).toBe('invalid_query');
+  });
+
+  it('returns vouchers expiring, becoming refundable, or settleable within the window', async () => {
+    // Use a fixed clock by seeding with specific dates
+    const now = Date.now();
+    
+    // Add more vouchers for testing the due endpoint
+    await prisma.voucher.createMany({
+      data: [
+        // Funded, expires in 48h -> should be in 72h window (refundable at expiry)
+        {
+          funder: FUNDER,
+          beneficiaryRef: REF,
+          providerAddress: CLINIC,
+          id: 'due-1',
+          serviceCode: 101,
+          amount: '30000000',
+          status: 'Funded',
+          createdAt: new Date(now - 10 * DAY),
+          expiresAt: new Date(now + 48 * 60 * 60 * 1000),
+        },
+        // Claimed, expired 24h ago -> refundable in 6 days (outside 72h)
+        {
+          funder: FUNDER,
+          beneficiaryRef: REF,
+          providerAddress: CLINIC,
+          id: 'due-2',
+          serviceCode: 101,
+          amount: '30000000',
+          status: 'Claimed',
+          createdAt: new Date(now - 31 * DAY),
+          expiresAt: new Date(now - 24 * 60 * 60 * 1000),
+        },
+        // Attested, dispute deadline in 24h -> settleable in window
+        {
+          funder: FUNDER,
+          beneficiaryRef: REF,
+          providerAddress: CLINIC,
+          id: 'due-3',
+          serviceCode: 101,
+          amount: '30000000',
+          status: 'Attested',
+          createdAt: new Date(now - 5 * DAY),
+          expiresAt: new Date(now + 25 * DAY),
+          disputeDeadline: new Date(now + 24 * 60 * 60 * 1000),
+        },
+        // Funded, expires in 10 days -> outside 72h window
+        {
+          funder: FUNDER,
+          beneficiaryRef: REF,
+          providerAddress: CLINIC,
+          id: 'due-4',
+          serviceCode: 101,
+          amount: '30000000',
+          status: 'Funded',
+          createdAt: new Date(now - 10 * DAY),
+          expiresAt: new Date(now + 10 * DAY),
+        },
+      ],
+    });
+
+    // Use provider filter
+    const { body } = await get(`/vouchers/due?provider=${CLINIC}&within=72h`);
+    
+    // Existing seeded vouchers: id '2' (refundable now) and '4' (settleable now) are in window
+    // New vouchers: due-1 (expires in 48h) and due-3 (dispute deadline in 24h) are in window
+    // Total expected: 4
+    const ids = body.vouchers.map((v: { id: string }) => v.id).sort();
+    expect(ids).toContain('due-1');
+    expect(ids).toContain('due-3');
+    expect(ids).toContain('2');
+    expect(ids).toContain('4');
+    expect(ids).not.toContain('due-2');
+    expect(ids).not.toContain('due-4');
+    
+    expect(body.total).toBe(4);
+  });
 });
 
 describe('GET /governance', () => {

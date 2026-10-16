@@ -3,18 +3,14 @@
 ## Unreleased
 
 ### Added
-- `GET /governance` — current and pending admin for each contract, plus the
-  full proposal/handover history. Backed by a new `GovernanceEvent` table fed
-  by the `admin_proposed` and `admin_changed` events from all three contracts.
-- `GET /providers/:address/history` — every status transition for a clinic,
-  oldest first, from a new `ProviderStatusChange` table. Suspension history is
-  context the current `status` alone cannot show.
-- `GET /providers/:address/services/:code/history` — every observed price for a
-  service, oldest first, from a new `ServicePriceChange` table. Written only
-  when `service_upserted` actually changes the price; a relabel adds nothing.
-- The indexer now polls again immediately when a cycle fills its page budget
-  (`collectEvents` returns `hasMore`), instead of waiting `INDEXER_POLL_MS` the
-  whole way through a backlog. The normal interval resumes once caught up.
+- **GET /receipts?provider=**: List receipts by clinic/provider. Beneficiary references omitted in this view.
+- **GET /receipts/:voucherId**: Fetch a single receipt by voucher ID for shareable receipt pages and verification. No beneficiary reference in response.
+- **GET /vouchers/due?within=72h**: Vouchers needing action soon (expiring, becoming refundable, or settleable) with funder or provider filter. Uses lifecycle logic from `src/lib/lifecycle.ts` so API and contracts agree.
+- **Multi-status filter for vouchers**: `?status=Claimed,Attested` accepts comma-separated list validated against the status enum; invalid values rejected.
+
+### Changed
+- **GET /receipts**: Now requires exactly one of `beneficiaryRef` or `provider` query parameters.
+- **GET /vouchers**: Status filter now accepts comma-separated values (e.g., `Claimed,Attested`) instead of a single value.
 
 ## 0.2.0 — 2026-10-09
 
